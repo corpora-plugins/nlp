@@ -1,0 +1,203 @@
+{% extends 'base.html' %}
+{% load static %}
+{% load extras %}
+
+{% block css %}
+    <style>
+        .step-indicator {
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: bold;
+            transition: all 0.3s ease;
+        }
+
+        .step-completed {
+            background-color: #28a745;
+            color: white;
+            border: 2px solid #28a745;
+        }
+
+        .step-pending {
+            background-color: #f8f9fa;
+            color: #6c757d;
+            border: 2px solid #dee2e6;
+        }
+
+        .step-row {
+            padding: 15px 0;
+            border-bottom: 1px solid #e9ecef;
+        }
+
+        .step-row:last-child {
+            border-bottom: none;
+        }
+
+        .step-description {
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            padding-left: 20px;
+        }
+
+        .step-title {
+            font-weight: 600;
+            margin-bottom: 5px;
+        }
+
+        .step-subtitle {
+            color: #6c757d;
+            font-size: 0.9rem;
+        }
+    </style>
+{% endblock %}
+
+{% block main %}
+    <div class="card mb-3">
+        <div class="card-header">
+            <h4>NLP Analysis Status</h4>
+        </div>
+        <div class="card-body">
+            <div class="container-fluid">
+                <!-- Step 1 - Completed -->
+                <div class="row step-row align-items-center">
+                    <div class="col-2">
+                        <div id="read-indicator" class="step-indicator step-pending">
+                            1
+                        </div>
+                    </div>
+                    <div class="col-10">
+                        <div class="step-description">
+                            <div class="step-title">Read Text with spaCy</div>
+                            <div id="read-status" class="step-subtitle"></div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Step 2 - Pending -->
+                <div class="row step-row align-items-center">
+                    <div class="col-2">
+                        <div id="ner-indicator" class="step-indicator step-pending">
+                            2
+                        </div>
+                    </div>
+                    <div class="col-10">
+                        <div class="step-description">
+                            <div class="step-title">Create NER Tagged XML</div>
+                            <div id="ner-status" class="step-subtitle">
+                                Text must first be read with spaCy
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    {% if response.scholar %}
+        <div class="card mb-3">
+            <div class="card-header">
+                <h4>Running Jobs</h4>
+            </div>
+            <div id="running-jobs-div" class="card-body">
+            </div>
+        </div>
+
+        <div class="card mb-3">
+            <div class="card-header">
+                <h4>Provenance</h4>
+            </div>
+            <div class="card-body">
+                <div id="completed-jobs-div">
+                </div>
+            </div>
+        </div>
+    {% endif %}
+{% endblock %}
+
+{% block js %}
+    <script type="application/javascript">
+        let corpusID = '{{ corpus_id }}'
+        let corpus = null
+        let analysisID = '{{ content_id }}'
+        let role = '{{ role }}'
+        let jobManager = null
+
+        $(document).ready(function() {
+            fetch(`/api/corpus/${corpusID}/DocumentAnalysis/${analysisID}/`)
+                .then(resp => resp.json())
+                .then(analysis => {
+                    if (analysis.source_text) {
+                        {% if response.scholar %}
+                            corpora.get_corpus(corpusID, function(corpus_data) {
+                                corpus = corpus_data
+                                jobManager = new JobManager({
+                                    jobs_container: 'running-jobs-div',
+                                    provenance_container: 'completed-jobs-div',
+                                    provenance: analysis.provenance,
+                                    corpora: corpora,
+                                    corpus: corpus,
+                                    content_type: 'DocumentAnalysis',
+                                    content_id: analysisID,
+                                    scholar_id: '{{ response.scholar.id }}'
+                                })
+                            })
+                        {% endif %}
+
+                        let readStatusDiv = $('#read-status')
+                        let nerStatusDiv = $('#ner-status')
+                        let readIndicator = $('#read-indicator')
+                        let nerIndicator = $('#ner-indicator')
+                        let readTaskID = null
+                        let nerTaskID = null
+
+                        corpora.get_tasks('DocumentAnalysis', function(tasksInfo) {
+                             tasksInfo.forEach(task => {
+                                 if (task.name === 'Read Text with spaCy') readTaskID = task.id
+                                 if (task.name === 'Perform NER with spaCy') nerTaskID = task.id
+                             })
+
+                            if ('read_text_with_spacy' in analysis.procedures_completed) {
+                                readStatusDiv.html("Text has been read by spaCy!")
+                                readIndicator.removeClass('step-pending')
+                                readIndicator.addClass('step-completed')
+                                readIndicator.html('<i class="fas fa-check"></i>')
+
+                                if ('perform_ner_with_spacy' in analysis.procedures_completed) {
+                                    let relativeFilePath = analysis.procedures_completed['perform_ner_with_spacy']['tagged_text_file'].replace(`/corpora/${corpusID}/`, '')
+                                    nerStatusDiv.html(`NER tagged XML created: <a href="/corpus/${corpusID}/get-file/?path=${relativeFilePath}" download="${slugify(analysis.name)}_NER.xml">here</a>`)
+                                    nerIndicator.removeClass('step-pending')
+                                    nerIndicator.addClass('step-completed')
+                                    nerIndicator.html('<i class="fas fa-check"></i>')
+                                } else {
+                                    nerStatusDiv.html(`<button type="button" class="btn btn-sm btn-primary run-procedure-button" data-task-id="${nerTaskID}">Create NER Tagged XML</button>`)
+                                }
+                            } else {
+                                readStatusDiv.html(`<button type="button" class="btn btn-sm btn-primary run-procedure-button" data-task-id="${readTaskID}">Read Text with spaCy</button>`)
+                            }
+
+                            $('.run-procedure-button').click(function() {
+                                let button = $(this)
+                                let taskID = button.data('task-id')
+
+                                jobManager.new_job('DocumentAnalysis', analysisID, taskID)
+                            })
+                        })
+                    }
+                })
+
+            hide_loading_overlay()
+        });
+
+        function slugify(text) {
+          return text
+            .toLowerCase()
+            .trim()
+            .replace(/[\s-]+/g, '-')
+            .replace(/[^a-z0-9-]/g, '')
+            .replace(/^-+|-+$/g, '');
+        }
+    </script>
+{% endblock %}
